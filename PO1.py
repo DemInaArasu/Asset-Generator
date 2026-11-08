@@ -34,14 +34,24 @@ try:
     import maya.cmds as cmds
     import maya.mel as mel
     import maya.OpenMayaUI as omui
-    from shiboken2 import wrapInstance
-    from PySide2 import QtCore, QtGui, QtWidgets
+
+    # Try newer Maya versions first (PySide6)
+    try:
+        from shiboken6 import wrapInstance
+        from PySide6 import QtCore, QtGui, QtWidgets
+
+    # Fall back to older Maya versions (PySide2)
+    except ImportError:
+        from shiboken2 import wrapInstance
+        from PySide2 import QtCore, QtGui, QtWidgets
+
 except ImportError as import_error:
     raise RuntimeError(
         "Arras Procedural Tree Generator must be run inside Autodesk Maya "
-        "with PySide2 available. Original import error: {0}".format(import_error)
+        "with PySide2 or PySide6 available. Original import error: {0}".format(
+            import_error
+        )
     )
-
 
 # ---------------------------------------------------------------------------
 # Global settings
