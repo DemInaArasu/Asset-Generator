@@ -1,951 +1,741 @@
 # -*- coding: utf-8 -*-
-""" 
-ARRAS | Procedural Tree & Grove Generator
------------------------------------------
-A Maya tool that creates stylized trees from user-controlled parameters.
+"""ARRAS | Procedural Tree & Grove Generator (Autodesk Maya).
 
-Requirements:
-    - Autodesk Maya with Python 3
-    - PySide2 (included with supported Maya releases)
+P01 assignment: one Python source file, procedurally generated Maya meshes,
+PySide2 interface, and a shelf button with a custom tree icon.
 
-Launch:
-    1. Open Maya's Script Editor and switch to the Python tab.
-    2. Run the following, changing the path if needed:
+RUN FROM MAYA > WINDOWS > GENERAL EDITORS > SCRIPT EDITOR > PYTHON:
 
-       import runpy
-       _tool = runpy.run_path(r"C:/path/to/ArrasBrenda_P01_code.py")
-       _tool["show_ui"]()
+    import runpy
+    tool = runpy.run_path(r"C:/YOUR_FOLDER/ArrasBrenda_P01_code.py")
+    tool["show_ui"]()
 
-    3. The tool creates a custom-icon button on the currently selected shelf.
-       Use that shelf button for future launches.
+The first launch installs a custom-icon shelf button on the selected shelf.
+A generated PNG icon is a runtime *output*, not a second source file.
 
-All procedural geometry and UI code are contained in this one Python file.
+Maya 2024 and older: PySide2 + shiboken2.
+Maya 2025 and newer: PySide6 + shiboken6 fallback.
+This script is NOT intended for regular desktop Python outside Maya.
 """
-
-from __future__ import print_function
 
 import math
 import os
 import random
-import runpy
 import traceback
 
 try:
     import maya.cmds as cmds
     import maya.mel as mel
     import maya.OpenMayaUI as omui
-
-    # Try newer Maya versions first (PySide6)
-    try:
-        from shiboken6 import wrapInstance
-        from PySide6 import QtCore, QtGui, QtWidgets
-
-    # Fall back to older Maya versions (PySide2)
-    except ImportError:
-        from shiboken2 import wrapInstance
-        from PySide2 import QtCore, QtGui, QtWidgets
-
-except ImportError as import_error:
+except ImportError as exc:
     raise RuntimeError(
-        "Arras Procedural Tree Generator must be run inside Autodesk Maya "
-        "with PySide2 or PySide6 available. Original import error: {0}".format(
-            import_error
-        )
+        "ARRAS Tree Generator must run inside Autodesk Maya. "
+        "Maya import failed: {0}".format(exc)
     )
 
-# ---------------------------------------------------------------------------
-# Global settings
-# ---------------------------------------------------------------------------
+# Course requirement: use PySide2 when Maya provides it. Modern versions of
+# Maya ship PySide6, so allow that as a backward-compatible fallback.
+try:
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from shiboken2 import wrapInstance
+    QT_BINDING = "PySide2"
+except ImportError:
+    try:
+        from PySide6 import QtCore, QtGui, QtWidgets
+        from shiboken6 import wrapInstance
+        QT_BINDING = "PySide6"
+    except ImportError as exc:
+        raise RuntimeError(
+            "ARRAS Tree Generator needs Maya's PySide2/shiboken2 "
+            "(or PySide6/shiboken6 on recent Maya releases). "
+            "Import failed: {0}".format(exc)
+        )
 
-WINDOW_OBJECT_NAME = "ArrasProceduralTreeGeneratorWindow"
-WINDOW_TITLE = "ARRAS | Procedural Tree Generator"
-SHELF_ANNOTATION = "Arras Procedural Tree & Grove Generator"
+WINDOW_NAME = "ARRAS_P01_TreeGenerator_Dialog"
+SHELF_TOOLTIP = "ARRAS P01 | Procedural Tree & Grove Generator"
 SHELF_LABEL = "Tree Gen"
 
-# A small style dictionary keeps the geometry-generation code readable.
-TREE_STYLES = {
-    "Oak": {
-        "width": 1.00,
-        "upward": 0.62,
-        "cluster": 1.00,
-        "leaf_y": 0.95,
-        "leaf_xz": 1.00,
-        "droop": 0.00,
-    },
-    "Pine": {
-        "width": 0.68,
-        "upward": 0.80,
-        "cluster": 0.78,
-        "leaf_y": 1.35,
-        "leaf_xz": 0.78,
-        "droop": 0.00,
-    },
-    "Willow": {
-        "width": 1.18,
-        "upward": 0.38,
-        "cluster": 0.88,
-        "leaf_y": 1.35,
-        "leaf_xz": 0.78,
-        "droop": 0.22,
-    },
-    "Sakura": {
-        "width": 1.02,
-        "upward": 0.58,
-        "cluster": 1.12,
-        "leaf_y": 0.92,
-        "leaf_xz": 1.06,
-        "droop": 0.00,
-    },
+# These values change geometry, not just the material color.
+STYLES = {
+    "Oak":    {"spread": 1.00, "rise": 0.52, "cluster": 1.00, "tall": 0.86, "droop": 0.00},
+    "Pine":   {"spread": 0.66, "rise": 0.86, "cluster": 0.75, "tall": 1.25, "droop": 0.00},
+    "Willow": {"spread": 1.16, "rise": 0.24, "cluster": 0.87, "tall": 1.27, "droop": 0.68},
+    "Sakura": {"spread": 1.06, "rise": 0.52, "cluster": 1.07, "tall": 0.88, "droop": 0.00},
 }
 
-SEASON_PALETTES = {
-    "Spring": {
-        "leaf": (0.34, 0.66, 0.22),
-        "leaf_accent": (0.58, 0.79, 0.31),
-        "bark": (0.30, 0.16, 0.075),
-        "ground": (0.25, 0.34, 0.17),
-    },
-    "Summer": {
-        "leaf": (0.12, 0.42, 0.12),
-        "leaf_accent": (0.27, 0.57, 0.16),
-        "bark": (0.25, 0.13, 0.065),
-        "ground": (0.20, 0.29, 0.13),
-    },
-    "Autumn": {
-        "leaf": (0.72, 0.24, 0.055),
-        "leaf_accent": (0.94, 0.49, 0.075),
-        "bark": (0.28, 0.13, 0.06),
-        "ground": (0.38, 0.23, 0.11),
-    },
-    "Winter": {
-        "leaf": (0.42, 0.54, 0.61),
-        "leaf_accent": (0.72, 0.79, 0.82),
-        "bark": (0.24, 0.22, 0.20),
-        "ground": (0.35, 0.39, 0.42),
-    },
+PALETTES = {
+    "Spring": {"bark": (0.31, 0.18, 0.10), "leaf": (0.28, 0.58, 0.20),
+               "accent": (0.50, 0.74, 0.31), "ground": (0.30, 0.37, 0.19)},
+    "Summer": {"bark": (0.27, 0.14, 0.08), "leaf": (0.12, 0.39, 0.14),
+               "accent": (0.27, 0.55, 0.19), "ground": (0.24, 0.32, 0.14)},
+    "Autumn": {"bark": (0.29, 0.16, 0.09), "leaf": (0.77, 0.26, 0.06),
+               "accent": (0.94, 0.51, 0.09), "ground": (0.36, 0.26, 0.14)},
+    "Winter": {"bark": (0.27, 0.25, 0.24), "leaf": (0.50, 0.64, 0.71),
+               "accent": (0.77, 0.83, 0.87), "ground": (0.49, 0.55, 0.60)},
 }
 
-SAKURA_PALETTES = {
-    "Spring": ((0.91, 0.39, 0.57), (1.00, 0.68, 0.76)),
-    "Summer": ((0.83, 0.25, 0.48), (0.98, 0.53, 0.66)),
-    "Autumn": ((0.73, 0.25, 0.24), (0.91, 0.49, 0.40)),
-    "Winter": ((0.72, 0.64, 0.69), (0.90, 0.82, 0.85)),
+SAKURA_COLORS = {
+    "Spring": ((0.93, 0.42, 0.61), (1.00, 0.72, 0.80)),
+    "Summer": ((0.81, 0.30, 0.49), (0.99, 0.57, 0.72)),
+    "Autumn": ((0.82, 0.38, 0.32), (0.97, 0.57, 0.44)),
+    "Winter": ((0.72, 0.65, 0.71), (0.88, 0.80, 0.85)),
 }
 
 
-# ---------------------------------------------------------------------------
-# Maya helpers
-# ---------------------------------------------------------------------------
-
-def _maya_main_window():
-    """Return Maya's main window as a Qt parent, when available."""
-    pointer = omui.MQtUtil.mainWindow()
-    if not pointer:
-        return None
-    return wrapInstance(int(pointer), QtWidgets.QWidget)
-
-
-def _normalize(vector):
-    length = math.sqrt(vector[0] ** 2 + vector[1] ** 2 + vector[2] ** 2)
-    if length < 0.000001:
-        return (0.0, 1.0, 0.0)
-    return (vector[0] / length, vector[1] / length, vector[2] / length)
-
+# --------------------------------------------------------------------------
+# Small, pure-Python math and parameter helpers
+# --------------------------------------------------------------------------
 
 def _add(a, b):
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
 
-def _multiply(vector, amount):
-    return (vector[0] * amount, vector[1] * amount, vector[2] * amount)
+def _scale(vec, factor):
+    return (vec[0] * factor, vec[1] * factor, vec[2] * factor)
 
 
-def _ensure_lambert_material(name, color):
-    """Create or update a simple Maya Lambert material and shading group."""
-    shading_group = name + "_SG"
-
-    if not cmds.objExists(name):
-        shader = cmds.shadingNode("lambert", asShader=True, name=name)
-    else:
-        shader = name
-
-    if not cmds.objExists(shading_group):
-        shading_group = cmds.sets(
-            renderable=True,
-            noSurfaceShader=True,
-            empty=True,
-            name=shading_group,
-        )
-        cmds.connectAttr(shader + ".outColor", shading_group + ".surfaceShader", force=True)
-
-    cmds.setAttr(shader + ".color", color[0], color[1], color[2], type="double3")
-    return shading_group
+def _unit(vec):
+    length = math.sqrt(sum(component * component for component in vec))
+    return _scale(vec, 1.0 / length) if length > 1.0e-8 else (0.0, 1.0, 0.0)
 
 
-def _assign_material(objects, shading_group):
-    if not objects:
-        return
-    for obj in objects:
-        if obj and cmds.objExists(obj):
-            cmds.sets(obj, edit=True, forceElement=shading_group)
+def validate_settings(settings):
+    """Protect direct Python callers as well as users of the spin-box UI."""
+    limits = {
+        "height": (3.0, 16.0),
+        "canopy_width": (2.0, 10.0),
+        "branch_count": (3, 9),
+        "branch_levels": (1, 3),
+        "foliage_density": (1, 4),
+        "tree_count": (1, 6),
+        "spacing": (3.0, 22.0),
+        "seed": (0, 999999),
+    }
+    for key, (minimum, maximum) in limits.items():
+        value = settings[key]
+        if not minimum <= value <= maximum:
+            raise ValueError("{0} must be between {1} and {2}".format(
+                key, minimum, maximum))
+    if settings["style"] not in STYLES:
+        raise ValueError("Choose a valid tree style.")
+    if settings["season"] not in PALETTES:
+        raise ValueError("Choose a valid season.")
+    if not isinstance(settings["create_base"], bool):
+        raise ValueError("create_base must be True or False.")
 
 
-def _combine_meshes(meshes, name):
-    """Combine a list of mesh transforms to keep the Outliner organized."""
-    meshes = [mesh for mesh in meshes if mesh and cmds.objExists(mesh)]
-    if not meshes:
+def _material(name, rgb):
+    """Create a Lambert shader and its shadingEngine, without Arnold."""
+    shader = cmds.shadingNode("lambert", asShader=True, name=name)
+    group = cmds.sets(renderable=True, noSurfaceShader=True,
+                      empty=True, name=name + "SG")
+    cmds.connectAttr(shader + ".outColor", group + ".surfaceShader", force=True)
+    cmds.setAttr(shader + ".color", *rgb, type="double3")
+    return group
+
+
+def _assign(mesh, shading_group):
+    if mesh and cmds.objExists(mesh):
+        cmds.sets(mesh, edit=True, forceElement=shading_group)
+
+
+def _merge(meshes, name):
+    """Combine meshes before deleting their temporary source transforms.
+
+    Maya polyUnite has NO 'name' or 'constructionHistory' creation flags.
+    Rename the returned transform, then bake the history FIRST.
+    """
+    existing = [m for m in meshes if cmds.objExists(m)]
+    if not existing:
         return None
-    if len(meshes) == 1:
-        return meshes[0]
+    if len(existing) == 1:
+        return cmds.rename(existing[0], name)
 
-    combined = cmds.polyUnite(*meshes, mergeUVSets=1)[0]
-    combined = cmds.rename(combined, name)
-    # Bake the combine node before deleting its source transforms. This keeps
-    # the result independent from the temporary branch / leaf objects.
-    cmds.delete(combined, constructionHistory=True)
-    for mesh in meshes:
-        if mesh != combined and cmds.objExists(mesh):
-            cmds.delete(mesh)
-    return combined
+    result = cmds.polyUnite(*existing, mergeUVSets=1)[0]
+    result = cmds.rename(result, name)
+    cmds.delete(result, constructionHistory=True)
+    # After history is baked, the combined geometry is independent of inputs.
+    cmds.delete(existing)
+    return result
 
 
-def _make_tapered_trunk(height, radius, name):
-    """Create a segmented cylinder and taper its upper rings in object space."""
+def _make_trunk(height, radius, name):
+    """Build a tapered cylinder with a solid base resting on the ground."""
     trunk = cmds.polyCylinder(
-        radius=radius,
-        height=height,
-        subdivisionsAxis=10,
-        subdivisionsHeight=5,
-        subdivisionsCaps=1,
-        name=name,
+        radius=radius, height=height,
+        subdivisionsAxis=10, subdivisionsHeight=5,
+        subdivisionsCaps=1, constructionHistory=False, name=name
     )[0]
-
-    vertex_count = cmds.polyEvaluate(trunk, vertex=True)
-    for index in range(vertex_count):
-        component = "{0}.vtx[{1}]".format(trunk, index)
-        position = cmds.xform(component, query=True, objectSpace=True, translation=True)
-        x, y, z = position
-        height_ratio = (y + (height * 0.5)) / height
-        taper_factor = 1.0 - (0.48 * max(0.0, min(1.0, height_ratio)))
-        cmds.xform(
-            component,
-            objectSpace=True,
-            translation=(x * taper_factor, y, z * taper_factor),
-        )
-
+    count = cmds.polyEvaluate(trunk, vertex=True)
+    for index in range(count):
+        vertex = "{0}.vtx[{1}]".format(trunk, index)
+        x, y, z = cmds.xform(vertex, query=True, objectSpace=True, translation=True)
+        t = max(0.0, min(1.0, (y + height * 0.5) / height))
+        taper = 1.0 - 0.54 * t
+        cmds.xform(vertex, objectSpace=True,
+                   translation=(x * taper, y, z * taper))
     cmds.xform(trunk, worldSpace=True, translation=(0.0, height * 0.5, 0.0))
     return trunk
 
 
 def _make_branch(start, direction, length, radius, name):
-    """Create a tapered cone whose base starts at start and whose tip follows direction."""
-    direction = _normalize(direction)
-    end = _add(start, _multiply(direction, length))
-    midpoint = (
-        (start[0] + end[0]) * 0.5,
-        (start[1] + end[1]) * 0.5,
-        (start[2] + end[2]) * 0.5,
-    )
-
+    """Orient a cone along a vector, returning the transform and its tip."""
+    direction = _unit(direction)
+    end = _add(start, _scale(direction, length))
+    midpoint = _scale(_add(start, end), 0.5)
     branch = cmds.polyCone(
-        radius=max(0.025, radius),
-        height=length,
-        subdivisionsAxis=7,
-        subdivisionsHeight=1,
-        subdivisionsCap=1,
-        name=name,
+        radius=max(radius, 0.026), height=length,
+        subdivisionsAxis=7, subdivisionsHeight=1,
+        subdivisionsCap=1, constructionHistory=False, name=name
     )[0]
     rotation = cmds.angleBetween(
-        euler=True,
-        vector1=(0.0, 1.0, 0.0),
-        vector2=direction,
+        euler=True, vector1=(0.0, 1.0, 0.0), vector2=direction
     )
     cmds.xform(branch, worldSpace=True, translation=midpoint)
     cmds.xform(branch, worldSpace=True, rotation=rotation)
     return branch, end
 
 
-def _create_leaf_cluster(position, base_size, style_settings, rng, name):
-    """Create one low-poly foliage cluster with small randomized shape changes."""
-    cluster = cmds.polySphere(
-        radius=1.0,
-        subdivisionsX=7,
-        subdivisionsY=5,
-        name=name,
+def _leaf(position, size, style, rng, name):
+    """A simple low-poly leaf clump with randomized shape and rotation."""
+    sphere = cmds.polySphere(
+        radius=1.0, subdivisionsX=7, subdivisionsY=5,
+        constructionHistory=False, name=name
     )[0]
-
-    random_size = rng.uniform(0.78, 1.22)
-    sx = base_size * style_settings["leaf_xz"] * random_size * rng.uniform(0.88, 1.12)
-    sy = base_size * style_settings["leaf_y"] * random_size * rng.uniform(0.88, 1.12)
-    sz = base_size * style_settings["leaf_xz"] * random_size * rng.uniform(0.88, 1.12)
-
-    cmds.setAttr(cluster + ".scaleX", sx)
-    cmds.setAttr(cluster + ".scaleY", sy)
-    cmds.setAttr(cluster + ".scaleZ", sz)
-    cmds.xform(cluster, worldSpace=True, translation=position)
-    cmds.rotate(
-        rng.uniform(-35.0, 35.0),
-        rng.uniform(0.0, 360.0),
-        rng.uniform(-35.0, 35.0),
-        cluster,
-        worldSpace=True,
-    )
-    return cluster
+    scale = rng.uniform(0.78, 1.22) * size
+    cmds.setAttr(sphere + ".scaleX", scale * rng.uniform(0.88, 1.12))
+    cmds.setAttr(sphere + ".scaleY", scale * style["tall"])
+    cmds.setAttr(sphere + ".scaleZ", scale * rng.uniform(0.88, 1.12))
+    cmds.xform(sphere, worldSpace=True, translation=position)
+    cmds.rotate(rng.uniform(-25.0, 25.0), rng.uniform(0.0, 360.0),
+                rng.uniform(-25.0, 25.0), sphere, worldSpace=True)
+    return sphere
 
 
-# ---------------------------------------------------------------------------
-# Procedural tree construction
-# ---------------------------------------------------------------------------
+def _grow(start, direction, length, radius, level, maximum,
+          canopy_width, density, style, rng, branches, leaves_a, leaves_b,
+          created, prefix):
+    """Recursively branch; clumps appear only at terminal tips."""
+    segment, tip = _make_branch(start, direction, length, radius,
+                                prefix + "_Branch#")
+    created.append(segment)
+    branches.append(segment)
 
-def _grow_branch(start, direction, length, radius, depth, max_depth,
-                 canopy_width, foliage_density, style_settings, rng,
-                 branch_meshes, leaf_primary, leaf_accent, prefix):
-    """Recursively split a branch into smaller branches and terminal foliage."""
-    branch, end = _make_branch(
-        start,
-        direction,
-        length,
-        radius,
-        prefix + "_Branch#",
-    )
-    branch_meshes.append(branch)
-
-    if depth >= max_depth - 1:
-        # Several offset clusters make each twig end look fuller than a single ball.
-        leaf_size = max(0.13, canopy_width * 0.058) * style_settings["cluster"]
-        for leaf_index in range(foliage_density):
-            offset_radius = leaf_size * rng.uniform(0.0, 1.15)
-            angle = rng.uniform(0.0, math.pi * 2.0)
-            vertical_offset = rng.uniform(-0.45, 0.65) * leaf_size
-            leaf_position = (
-                end[0] + math.cos(angle) * offset_radius,
-                end[1] + vertical_offset,
-                end[2] + math.sin(angle) * offset_radius,
+    if level >= maximum - 1:
+        leaf_size = max(0.16, canopy_width * 0.063) * style["cluster"]
+        for _ in range(density):
+            theta = rng.uniform(0.0, math.pi * 2.0)
+            r = rng.uniform(0.0, leaf_size * 1.1)
+            position = (
+                tip[0] + math.cos(theta) * r,
+                tip[1] + rng.uniform(-0.35, 0.60) * leaf_size,
+                tip[2] + math.sin(theta) * r,
             )
-            cluster = _create_leaf_cluster(
-                leaf_position,
-                leaf_size,
-                style_settings,
-                rng,
-                prefix + "_Leaf#",
-            )
-            if rng.random() < 0.28:
-                leaf_accent.append(cluster)
-            else:
-                leaf_primary.append(cluster)
+            cluster = _leaf(position, leaf_size, style, rng, prefix + "_Leaf#")
+            created.append(cluster)
+            (leaves_b if rng.random() < 0.30 else leaves_a).append(cluster)
         return
 
-    child_count = rng.choice((2, 2, 3))
-    for child_index in range(child_count):
-        angle = rng.uniform(0.0, math.pi * 2.0)
+    # Exactly two children keeps the worst-case mesh count predictable.
+    for child in range(2):
+        angle = (child * math.pi) + rng.uniform(-0.65, 0.65)
         side = (math.cos(angle), 0.0, math.sin(angle))
-        spread = rng.uniform(0.34, 0.72)
-        upward = rng.uniform(0.16, 0.55)
-        child_direction = _normalize((
-            direction[0] * 0.58 + side[0] * spread,
-            direction[1] * 0.58 + upward - style_settings["droop"],
-            direction[2] * 0.58 + side[2] * spread,
+        child_dir = _unit((
+            direction[0] * 0.62 + side[0] * rng.uniform(0.35, 0.60),
+            direction[1] * 0.52 + rng.uniform(0.20, 0.44) - style["droop"],
+            direction[2] * 0.62 + side[2] * rng.uniform(0.35, 0.60),
         ))
-        child_length = length * rng.uniform(0.56, 0.74)
-        child_radius = radius * rng.uniform(0.60, 0.73)
-        _grow_branch(
-            end,
-            child_direction,
-            child_length,
-            child_radius,
-            depth + 1,
-            max_depth,
-            canopy_width,
-            foliage_density,
-            style_settings,
-            rng,
-            branch_meshes,
-            leaf_primary,
-            leaf_accent,
-            prefix,
+        _grow(
+            tip, child_dir, length * rng.uniform(0.57, 0.73),
+            radius * 0.67, level + 1, maximum,
+            canopy_width, density, style, rng,
+            branches, leaves_a, leaves_b, created, prefix,
         )
 
 
-def _build_tree(name, height, canopy_width, branch_count, branch_levels,
-                foliage_density, style, season, seed, create_base,
-                materials, size_multiplier=1.0):
-    """Build one tree and return its top-level transform."""
-    rng = random.Random(seed)
-    settings = TREE_STYLES[style]
-    height *= size_multiplier
-    canopy_width *= size_multiplier * settings["width"]
-    trunk_radius = max(0.13, height * 0.034)
+def _build_tree(root, index, settings, materials, scale_factor):
+    """Build one tree under a generated-output root and return its group."""
+    style = STYLES[settings["style"]]
+    rng = random.Random(settings["seed"] + index * 1009)
+    name = root + "_Tree{0:02d}".format(index + 1)
+    height = settings["height"] * scale_factor
+    width = settings["canopy_width"] * scale_factor * style["spread"]
+    radius = max(0.13, height * 0.037)
 
-    trunk = _make_tapered_trunk(height, trunk_radius, name + "_Trunk_GEO")
-    branch_meshes = []
-    leaf_primary = []
-    leaf_accent = []
+    branches, leaves_a, leaves_b = [], [], []
+    created = []
+    # This group is created before the geometry, so errors can be cleaned up.
+    tree_group = cmds.group(empty=True, name=name + "_GRP", parent=root)
+    try:
+        trunk = _make_trunk(height, radius, name + "_Trunk_GEO")
+        created.append(trunk)
+        density = settings["foliage_density"]
+        if settings["season"] == "Winter":
+            density = max(1, density - 1)
 
-    # Winter trees keep more visible branching by reducing the number of clusters.
-    effective_density = foliage_density
-    if season == "Winter":
-        effective_density = max(1, int(round(foliage_density * 0.55)))
+        count = settings["branch_count"]
+        for i in range(count):
+            phi = (2.0 * math.pi * i / float(count)) + rng.uniform(-0.17, 0.17)
+            outward = (math.cos(phi), 0.0, math.sin(phi))
+            rise = 0.23 + 0.65 * ((i + 0.5) / float(count))
+            start = (outward[0] * radius * 0.32,
+                     height * rise, outward[2] * radius * 0.32)
+            direction = _unit((outward[0], style["rise"] + rng.uniform(-0.12, 0.12),
+                               outward[2]))
+            branch_length = width * rng.uniform(0.46, 0.65)
+            if settings["style"] == "Pine":
+                branch_length *= 1.58 - rise * 0.82  # broad base, narrow crown
+            elif settings["style"] == "Willow":
+                branch_length *= 1.12
+            _grow(
+                start, direction, branch_length,
+                max(0.055, radius * rng.uniform(0.26, 0.37)),
+                0, settings["branch_levels"], width, density,
+                style, rng, branches, leaves_a, leaves_b, created, name,
+            )
 
-    # Main branches are distributed around the trunk at staggered heights.
-    for branch_index in range(branch_count):
-        angle = (math.pi * 2.0 * branch_index / float(branch_count))
-        angle += rng.uniform(-0.18, 0.18)
-        height_ratio = 0.25 + (0.62 * ((branch_index + 0.5) / float(branch_count)))
-        radial_x = math.cos(angle)
-        radial_z = math.sin(angle)
-        start = (
-            radial_x * trunk_radius * 0.32,
-            height * height_ratio,
-            radial_z * trunk_radius * 0.32,
-        )
+        branch_geo = _merge(branches, name + "_Branches_GEO")
+        if branch_geo:
+            created.append(branch_geo)
+        foliage_geo = _merge(leaves_a, name + "_Foliage_GEO")
+        if foliage_geo:
+            created.append(foliage_geo)
+        accents_geo = _merge(leaves_b, name + "_FoliageAccent_GEO")
+        if accents_geo:
+            created.append(accents_geo)
 
-        upward = settings["upward"] + rng.uniform(-0.10, 0.14)
-        direction = _normalize((radial_x, upward, radial_z))
-        length_factor = rng.uniform(0.48, 0.68)
-        if style == "Pine":
-            # Longer lower limbs and shorter upper limbs create a conifer silhouette.
-            length_factor *= (1.36 - height_ratio * 0.62)
-        elif style == "Willow":
-            length_factor *= 1.10
+        # Group only finished meshes, not thousands of temporary primitives.
+        for obj, shader in (
+            (trunk, materials["bark"]),
+            (branch_geo, materials["bark"]),
+            (foliage_geo, materials["leaf"]),
+            (accents_geo, materials["accent"]),
+        ):
+            if obj and cmds.objExists(obj):
+                _assign(obj, shader)
+                cmds.parent(obj, tree_group)
 
-        primary_length = canopy_width * length_factor
-        primary_radius = max(0.055, trunk_radius * rng.uniform(0.25, 0.34))
-        _grow_branch(
-            start,
-            direction,
-            primary_length,
-            primary_radius,
-            0,
-            branch_levels,
-            canopy_width,
-            effective_density,
-            settings,
-            rng,
-            branch_meshes,
-            leaf_primary,
-            leaf_accent,
-            name,
-        )
-
-    branch_geo = _combine_meshes(branch_meshes, name + "_Branches_GEO")
-    primary_geo = _combine_meshes(leaf_primary, name + "_Foliage_GEO")
-    accent_geo = _combine_meshes(leaf_accent, name + "_FoliageAccent_GEO")
-
-    geometry = [trunk]
-    if branch_geo:
-        geometry.append(branch_geo)
-    if primary_geo:
-        geometry.append(primary_geo)
-    if accent_geo:
-        geometry.append(accent_geo)
-
-    if create_base:
-        base = cmds.polyCylinder(
-            radius=canopy_width * 0.78,
-            height=0.18,
-            subdivisionsAxis=24,
-            subdivisionsHeight=1,
-            name=name + "_GroundBase_GEO",
-        )[0]
-        cmds.xform(base, worldSpace=True, translation=(0.0, -0.13, 0.0))
-        geometry.append(base)
-        _assign_material([base], materials["ground"])
-
-    _assign_material([trunk, branch_geo], materials["bark"])
-    _assign_material([primary_geo], materials["leaf"])
-    _assign_material([accent_geo], materials["leaf_accent"])
-
-    tree_group = cmds.group(*geometry, name=name + "_GRP")
-    return tree_group
+        if settings["create_base"]:
+            disk = cmds.polyCylinder(
+                radius=width * 0.73, height=0.16,
+                subdivisionsAxis=24, subdivisionsHeight=1,
+                constructionHistory=False, name=name + "_Base_GEO"
+            )[0]
+            created.append(disk)
+            cmds.xform(disk, worldSpace=True, translation=(0.0, -0.10, 0.0))
+            _assign(disk, materials["ground"])
+            cmds.parent(disk, tree_group)
+        return tree_group
+    except Exception:
+        # Unmerged geometry is not parented yet: clean up all surviving pieces.
+        for obj in created:
+            if cmds.objExists(obj):
+                cmds.delete(obj)
+        if cmds.objExists(tree_group):
+            cmds.delete(tree_group)
+        raise
 
 
 def generate_asset(settings):
-    """Generate one tree or a small grid-based grove from a settings dictionary."""
-    season = settings["season"]
-    style = settings["style"]
-    palette = dict(SEASON_PALETTES[season])
-    if style == "Sakura":
-        palette["leaf"], palette["leaf_accent"] = SAKURA_PALETTES[season]
+    """Create 1-6 distinct procedural trees, return top-level Maya group."""
+    validate_settings(settings)
+    root = cmds.group(empty=True, name="ARRAS_PTG_Generated#")
+    palette = dict(PALETTES[settings["season"]])
+    if settings["style"] == "Sakura":
+        palette["leaf"], palette["accent"] = SAKURA_COLORS[settings["season"]]
 
-    materials = {
-        "bark": _ensure_lambert_material("ARRAS_PTG_Bark_MAT", palette["bark"]),
-        "leaf": _ensure_lambert_material("ARRAS_PTG_Foliage_MAT", palette["leaf"]),
-        "leaf_accent": _ensure_lambert_material(
-            "ARRAS_PTG_FoliageAccent_MAT", palette["leaf_accent"]
-        ),
-        "ground": _ensure_lambert_material("ARRAS_PTG_Ground_MAT", palette["ground"]),
-    }
+    # Unique shaders per generation preserve old trees' palettes if users
+    # choose the 'Keep previous output' checkbox.
+    shader_nodes = []
+    try:
+        shaders = {}
+        for material_name in ("bark", "leaf", "accent", "ground"):
+            full_name = root + "_" + material_name.capitalize() + "_MAT"
+            shaders[material_name] = _material(full_name, palette[material_name])
+            shader_nodes.append(full_name)
+            shader_nodes.append(full_name + "SG")
 
-    tree_count = settings["tree_count"]
-    columns = int(math.ceil(math.sqrt(tree_count)))
-    rows = int(math.ceil(tree_count / float(columns)))
-    created_trees = []
-    base_rng = random.Random(settings["seed"])
-
-    for index in range(tree_count):
-        row = index // columns
-        column = index % columns
-        x_position = (column - (columns - 1) * 0.5) * settings["spacing"]
-        z_position = (row - (rows - 1) * 0.5) * settings["spacing"]
-
-        tree_seed = settings["seed"] + (index * 1009)
-        size_multiplier = 1.0
-        if tree_count > 1:
-            size_multiplier = base_rng.uniform(0.84, 1.16)
-
-        tree = _build_tree(
-            name="ARRAS_PTG_Tree{0:02d}".format(index + 1),
-            height=settings["height"],
-            canopy_width=settings["canopy_width"],
-            branch_count=settings["branch_count"],
-            branch_levels=settings["branch_levels"],
-            foliage_density=settings["foliage_density"],
-            style=style,
-            season=season,
-            seed=tree_seed,
-            create_base=settings["create_base"],
-            materials=materials,
-            size_multiplier=size_multiplier,
-        )
-        cmds.move(x_position, 0.0, z_position, tree, relative=True, worldSpace=True)
-        created_trees.append(tree)
-
-    output_group = cmds.group(*created_trees, name="ARRAS_PTG_Generated_GRP#")
-    return output_group
+        amount = settings["tree_count"]
+        columns = int(math.ceil(math.sqrt(amount)))
+        rows = int(math.ceil(amount / float(columns)))
+        grove_rng = random.Random(settings["seed"] + 31)
+        for i in range(amount):
+            size = 1.0 if amount == 1 else grove_rng.uniform(0.84, 1.16)
+            tree = _build_tree(root, i, settings, shaders, size)
+            column, row = i % columns, i // columns
+            x = (column - (columns - 1) / 2.0) * settings["spacing"]
+            z = (row - (rows - 1) / 2.0) * settings["spacing"]
+            cmds.xform(tree, worldSpace=True, translation=(x, 0.0, z))
+        return root
+    except Exception:
+        if cmds.objExists(root):
+            cmds.delete(root)
+        for node in shader_nodes:
+            if cmds.objExists(node):
+                cmds.delete(node)
+        raise
 
 
-# ---------------------------------------------------------------------------
-# Custom shelf icon and shelf installer
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Shelf icon drawn at runtime - no separate source image needed
+# --------------------------------------------------------------------------
 
-def _create_shelf_icon():
-    """Draw a small tree icon at runtime so no extra image file is required."""
-    scripts_directory = cmds.internalVar(userScriptDir=True)
-    icon_directory = os.path.join(scripts_directory, "arras_ptg_icons")
-    if not os.path.isdir(icon_directory):
-        os.makedirs(icon_directory)
-    icon_path = os.path.join(icon_directory, "arras_tree_generator.png")
+def _icon_path():
+    directory = os.path.join(cmds.internalVar(userScriptDir=True),
+                             "arras_p01_tree_icons")
+    if not os.path.isdir(directory):
+        os.makedirs(directory)
+    path = os.path.join(directory, "arras_tree_shelf.png")
 
-    pixmap = QtGui.QPixmap(64, 64)
-    pixmap.fill(QtCore.Qt.transparent)
-    painter = QtGui.QPainter(pixmap)
-    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-
-    painter.setPen(QtGui.QPen(QtGui.QColor(39, 56, 46), 2))
-    painter.setBrush(QtGui.QColor(35, 48, 42))
-    painter.drawRoundedRect(QtCore.QRectF(2, 2, 60, 60), 12, 12)
-
-    # Three overlapping canopy shapes and a tapered trunk make the icon readable
-    # at the compact size used by Maya shelves.
-    painter.setPen(QtCore.Qt.NoPen)
-    painter.setBrush(QtGui.QColor(117, 175, 105))
-    painter.drawEllipse(QtCore.QRectF(13, 12, 27, 28))
-    painter.setBrush(QtGui.QColor(87, 145, 83))
-    painter.drawEllipse(QtCore.QRectF(27, 17, 25, 25))
-    painter.setBrush(QtGui.QColor(153, 195, 119))
-    painter.drawEllipse(QtCore.QRectF(20, 7, 23, 24))
-
-    trunk_pen = QtGui.QPen(QtGui.QColor(190, 139, 91), 6)
-    trunk_pen.setCapStyle(QtCore.Qt.RoundCap)
-    painter.setPen(trunk_pen)
-    painter.drawLine(QtCore.QPointF(32, 35), QtCore.QPointF(32, 54))
-    painter.setPen(QtGui.QPen(QtGui.QColor(190, 139, 91), 4, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
-    painter.drawLine(QtCore.QPointF(32, 43), QtCore.QPointF(22, 34))
-    painter.drawLine(QtCore.QPointF(32, 43), QtCore.QPointF(43, 34))
-    painter.end()
-
-    pixmap.save(icon_path, "PNG")
-    return icon_path
+    image = QtGui.QPixmap(64, 64)
+    image.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(image)
+    try:
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(31, 43, 38))
+        painter.drawRoundedRect(QtCore.QRectF(2, 2, 60, 60), 10, 10)
+        painter.setBrush(QtGui.QColor(145, 101, 66))
+        painter.drawRect(QtCore.QRectF(28, 34, 8, 20))
+        painter.setBrush(QtGui.QColor(83, 157, 89))
+        painter.drawEllipse(QtCore.QRectF(11, 17, 31, 29))
+        painter.setBrush(QtGui.QColor(110, 189, 103))
+        painter.drawEllipse(QtCore.QRectF(24, 14, 29, 29))
+        painter.setBrush(QtGui.QColor(160, 211, 124))
+        painter.drawEllipse(QtCore.QRectF(17, 8, 29, 29))
+    finally:
+        painter.end()
+    if not image.save(path, "PNG"):
+        raise RuntimeError("Could not write the custom shelf icon to: " + path)
+    return path
 
 
 def install_shelf_button():
-    """Install/update the custom Tree Gen button on Maya's selected shelf."""
+    """Create/update one launch button in the active Maya shelf.
+
+    NOTE: Shelf layouts are UI, NOT DG scene nodes. Always query
+    cmds.shelfLayout(..., exists=True), not cmds.objExists(...).
+    """
     try:
-        shelf_top = mel.eval("$tmp = $gShelfTopLevel")
-        selected_shelf = cmds.tabLayout(shelf_top, query=True, selectTab=True)
-        if not selected_shelf or not cmds.objExists(selected_shelf):
-            cmds.warning("ARRAS PTG: Select a Maya shelf before installing the button.")
-            return False
+        shelf_top = mel.eval('global string $gShelfTopLevel; $gShelfTopLevel;')
+        if not shelf_top or not cmds.tabLayout(shelf_top, exists=True):
+            raise RuntimeError("Maya's shelf UI is not available yet.")
+        selected = cmds.tabLayout(shelf_top, query=True, selectTab=True)
+        if not selected or not cmds.shelfLayout(selected, exists=True):
+            raise RuntimeError("Select a visible Maya shelf tab first.")
+        source_file = os.path.abspath(__file__)
+        if not os.path.isfile(source_file):
+            raise RuntimeError("Save this Python file to disk before installing the shelf.")
 
-        icon_path = _create_shelf_icon()
-        source_path = os.path.abspath(__file__)
-        # repr() creates a valid Python string literal on both Windows and macOS.
-        source_path_literal = repr(source_path)
-        shelf_command = (
+        command = (
             "import runpy\n"
-            "_arras_ptg = runpy.run_path({0})\n"
-            "_arras_ptg['show_ui'](install_shelf=False)\n"
-        ).format(source_path_literal)
+            "_arras_p01 = runpy.run_path({0})\n"
+            "_arras_p01['show_ui'](install_shelf=False)\n"
+        ).format(repr(source_file))
+        icon = _icon_path()
 
-        # Remove an older copy of this tool's button instead of making duplicates.
-        shelf_children = cmds.shelfLayout(selected_shelf, query=True, childArray=True) or []
-        for child in shelf_children:
+        # Avoid duplicate launchers when the user runs the installer again.
+        children = cmds.shelfLayout(selected, query=True, childArray=True) or []
+        for child in children:
             try:
-                annotation = cmds.shelfButton(child, query=True, annotation=True)
-                if annotation == SHELF_ANNOTATION:
+                if cmds.shelfButton(child, query=True,
+                                    annotation=True) == SHELF_TOOLTIP:
                     cmds.deleteUI(child)
             except Exception:
-                pass
+                pass  # Shelf separators are not shelfButtons.
 
         cmds.shelfButton(
-            parent=selected_shelf,
-            label=SHELF_LABEL,
-            annotation=SHELF_ANNOTATION,
-            image=icon_path,
-            sourceType="python",
-            command=shelf_command,
+            parent=selected, label=SHELF_LABEL,
+            annotation=SHELF_TOOLTIP,
+            image=icon, style="iconOnly",
+            sourceType="python", command=command,
         )
         return True
-    except Exception as shelf_error:
-        cmds.warning("ARRAS PTG: Could not install shelf button: {0}".format(shelf_error))
+    except Exception as error:
+        cmds.warning("ARRAS P01 shelf button not installed: {0}".format(error))
         return False
 
 
-# ---------------------------------------------------------------------------
-# PySide2 user interface
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# PySide2 GUI (PySide6 fallback for newer versions of Maya)
+# --------------------------------------------------------------------------
 
-class ProceduralTreeGeneratorUI(QtWidgets.QDialog):
-    """Main PySide2 window for building procedural trees and groves."""
+def _maya_window():
+    pointer = omui.MQtUtil.mainWindow()
+    return wrapInstance(int(pointer), QtWidgets.QWidget) if pointer else None
+
+
+class TreeGeneratorWindow(QtWidgets.QDialog):
+    """Artist-facing controls for all procedural parameters."""
 
     def __init__(self, parent=None):
-        super(ProceduralTreeGeneratorUI, self).__init__(parent)
-        self.setObjectName(WINDOW_OBJECT_NAME)
-        self.setWindowTitle(WINDOW_TITLE)
-        self.setMinimumWidth(430)
-        self.setMaximumWidth(560)
-        self.setWindowFlags(self.windowFlags() ^ QtCore.Qt.WindowContextHelpButtonHint)
-        self._last_generated_group = None
-        self._build_ui()
-        self._apply_style()
-
-    def _build_ui(self):
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(18, 16, 18, 16)
-        main_layout.setSpacing(12)
-
-        header = QtWidgets.QLabel("PROCEDURAL TREE GENERATOR")
-        header.setObjectName("HeaderLabel")
-        subtitle = QtWidgets.QLabel(
-            "Create stylized trees or a randomized grove directly in your Maya scene."
-        )
-        subtitle.setObjectName("SubtitleLabel")
-        subtitle.setWordWrap(True)
-        main_layout.addWidget(header)
-        main_layout.addWidget(subtitle)
-
-        shape_group = QtWidgets.QGroupBox("TREE SHAPE")
-        shape_layout = QtWidgets.QFormLayout(shape_group)
-        shape_layout.setLabelAlignment(QtCore.Qt.AlignLeft)
-        shape_layout.setFormAlignment(QtCore.Qt.AlignTop)
-        shape_layout.setHorizontalSpacing(18)
-        shape_layout.setVerticalSpacing(9)
-
-        self.height_spin = self._double_spin(4.0, 18.0, 8.0, 1)
-        self.width_spin = self._double_spin(2.0, 12.0, 5.5, 1)
-        self.branches_spin = self._int_spin(3, 12, 7)
-        self.levels_spin = self._int_spin(1, 3, 3)
-        self.density_spin = self._int_spin(1, 4, 3)
-
-        shape_layout.addRow("Tree height", self._with_suffix(self.height_spin, " units"))
-        shape_layout.addRow("Canopy width", self._with_suffix(self.width_spin, " units"))
-        shape_layout.addRow("Primary branches", self.branches_spin)
-        shape_layout.addRow("Branching levels", self.levels_spin)
-        shape_layout.addRow("Foliage density", self.density_spin)
-        main_layout.addWidget(shape_group)
-
-        variation_group = QtWidgets.QGroupBox("STYLE & VARIATION")
-        variation_layout = QtWidgets.QFormLayout(variation_group)
-        variation_layout.setHorizontalSpacing(18)
-        variation_layout.setVerticalSpacing(9)
-
-        self.style_combo = QtWidgets.QComboBox()
-        self.style_combo.addItems(["Oak", "Pine", "Willow", "Sakura"])
-        self.season_combo = QtWidgets.QComboBox()
-        self.season_combo.addItems(["Spring", "Summer", "Autumn", "Winter"])
-        self.seed_spin = self._int_spin(1, 999999, 2026)
-        self.count_spin = self._int_spin(1, 8, 1)
-        self.spacing_spin = self._double_spin(4.0, 24.0, 8.0, 1)
-
-        variation_layout.addRow("Tree style", self.style_combo)
-        variation_layout.addRow("Season / color palette", self.season_combo)
-        variation_layout.addRow("Random seed", self.seed_spin)
-        variation_layout.addRow("Trees in grove", self.count_spin)
-        variation_layout.addRow("Grove spacing", self._with_suffix(self.spacing_spin, " units"))
-        main_layout.addWidget(variation_group)
-
-        options_layout = QtWidgets.QHBoxLayout()
-        self.base_checkbox = QtWidgets.QCheckBox("Create ground bases")
-        self.base_checkbox.setChecked(False)
-        self.keep_checkbox = QtWidgets.QCheckBox("Keep previous output")
-        self.keep_checkbox.setChecked(False)
-        options_layout.addWidget(self.base_checkbox)
-        options_layout.addStretch(1)
-        options_layout.addWidget(self.keep_checkbox)
-        main_layout.addLayout(options_layout)
-
-        button_row = QtWidgets.QHBoxLayout()
-        self.random_button = QtWidgets.QPushButton("Randomize Seed")
-        self.random_button.setObjectName("SecondaryButton")
-        self.generate_button = QtWidgets.QPushButton("Generate Tree / Grove")
-        self.generate_button.setObjectName("PrimaryButton")
-        button_row.addWidget(self.random_button)
-        button_row.addWidget(self.generate_button, 1)
-        main_layout.addLayout(button_row)
-
-        self.clear_button = QtWidgets.QPushButton("Clear Last Generated Output")
-        self.clear_button.setObjectName("ClearButton")
-        main_layout.addWidget(self.clear_button)
-
-        self.status_label = QtWidgets.QLabel(
-            "Ready. Change the parameters and generate a tree."
-        )
-        self.status_label.setObjectName("StatusLabel")
-        self.status_label.setWordWrap(True)
-        main_layout.addWidget(self.status_label)
-
-        footer = QtWidgets.QLabel(
-            "Tip: Change the seed to create a repeatable new variation."
-        )
-        footer.setObjectName("FooterLabel")
-        main_layout.addWidget(footer)
-
-        self.generate_button.clicked.connect(self._on_generate)
-        self.random_button.clicked.connect(self._on_randomize)
-        self.clear_button.clicked.connect(self._on_clear)
-        self.count_spin.valueChanged.connect(self._on_tree_count_changed)
+        super(TreeGeneratorWindow, self).__init__(parent)
+        self.setObjectName(WINDOW_NAME)
+        self.setWindowTitle("ARRAS | Procedural Tree Generator")
+        self.setMinimumWidth(420)
+        self.resize(470, 690)
+        self.setWindowFlags(self.windowFlags() &
+                            ~QtCore.Qt.WindowContextHelpButtonHint)
+        self.last_output = None
+        self._setup()
+        self._style()
+        self._count_changed(self.number.value())
 
     @staticmethod
-    def _double_spin(minimum, maximum, value, decimals=1):
-        widget = QtWidgets.QDoubleSpinBox()
-        widget.setRange(minimum, maximum)
-        widget.setValue(value)
-        widget.setDecimals(decimals)
-        widget.setSingleStep(0.5)
-        return widget
-
-    @staticmethod
-    def _int_spin(minimum, maximum, value):
+    def _spin(minimum, maximum, initial):
         widget = QtWidgets.QSpinBox()
         widget.setRange(minimum, maximum)
-        widget.setValue(value)
+        widget.setValue(initial)
         return widget
 
     @staticmethod
-    def _with_suffix(widget, suffix):
+    def _double(minimum, maximum, initial, suffix=""):
+        widget = QtWidgets.QDoubleSpinBox()
+        widget.setRange(minimum, maximum)
+        widget.setValue(initial)
+        widget.setDecimals(1)
+        widget.setSingleStep(0.5)
         widget.setSuffix(suffix)
         return widget
 
-    def _apply_style(self):
+    def _setup(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(9)
+
+        title = QtWidgets.QLabel("PROCEDURAL TREE + GROVE")
+        title.setObjectName("Heading")
+        outer.addWidget(title)
+        subtitle = QtWidgets.QLabel("Model stylized trees in Maya using adjustable parameters.")
+        subtitle.setWordWrap(True)
+        outer.addWidget(subtitle)
+
+        # Scroll area keeps controls accessible on laptops and small monitors.
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        content = QtWidgets.QWidget()
+        inside = QtWidgets.QVBoxLayout(content)
+        inside.setContentsMargins(2, 2, 2, 2)
+        inside.setSpacing(10)
+
+        geometry = QtWidgets.QGroupBox("01  TREE GEOMETRY")
+        f = QtWidgets.QFormLayout(geometry)
+        self.height = self._double(3, 16, 8, " units")
+        self.width = self._double(2, 10, 5.5, " units")
+        self.branches = self._spin(3, 9, 6)
+        self.levels = self._spin(1, 3, 2)
+        self.density = self._spin(1, 4, 3)
+        f.addRow("Tree height", self.height)
+        f.addRow("Canopy width", self.width)
+        f.addRow("Main branches", self.branches)
+        f.addRow("Branching levels", self.levels)
+        f.addRow("Foliage clumps / tip", self.density)
+        inside.addWidget(geometry)
+
+        variation = QtWidgets.QGroupBox("02  STYLE + VARIATION")
+        f = QtWidgets.QFormLayout(variation)
+        self.tree_style = QtWidgets.QComboBox()
+        self.tree_style.addItems(["Oak", "Pine", "Willow", "Sakura"])
+        self.season = QtWidgets.QComboBox()
+        self.season.addItems(["Spring", "Summer", "Autumn", "Winter"])
+        self.seed = self._spin(0, 999999, 2026)
+        self.random_seed = QtWidgets.QPushButton("New random seed")
+        f.addRow("Tree species", self.tree_style)
+        f.addRow("Season / colors", self.season)
+        f.addRow("Random seed", self.seed)
+        f.addRow("", self.random_seed)
+        inside.addWidget(variation)
+
+        grove = QtWidgets.QGroupBox("03  GROVE + OUTPUT")
+        f = QtWidgets.QFormLayout(grove)
+        self.number = self._spin(1, 6, 1)
+        self.spacing = self._double(3, 22, 8, " units")
+        self.ground = QtWidgets.QCheckBox("Add a ground disc for each tree")
+        self.keep = QtWidgets.QCheckBox("Keep previously generated trees")
+        f.addRow("Number of trees", self.number)
+        f.addRow("Distance between trees", self.spacing)
+        f.addRow("", self.ground)
+        f.addRow("", self.keep)
+        inside.addWidget(grove)
+
+        self.estimate = QtWidgets.QLabel("")
+        self.estimate.setWordWrap(True)
+        inside.addWidget(self.estimate)
+        inside.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        self.generate_button = QtWidgets.QPushButton("Generate tree")
+        self.generate_button.setObjectName("Generate")
+        self.clear_button = QtWidgets.QPushButton("Delete last generated result")
+        self.clear_button.setObjectName("Clear")
+        outer.addWidget(self.generate_button)
+        outer.addWidget(self.clear_button)
+        self.status = QtWidgets.QLabel("Ready. Adjust the controls and press Generate.")
+        self.status.setWordWrap(True)
+        self.status.setObjectName("Status")
+        outer.addWidget(self.status)
+        qt_note = QtWidgets.QLabel("GUI: {0}  |  Press F in Maya to frame the selection".format(QT_BINDING))
+        qt_note.setObjectName("Note")
+        outer.addWidget(qt_note)
+
+        self.generate_button.clicked.connect(self._generate)
+        self.clear_button.clicked.connect(self._clear)
+        self.random_seed.clicked.connect(self._randomize)
+        self.number.valueChanged.connect(self._count_changed)
+        self.branches.valueChanged.connect(self._estimate)
+        self.levels.valueChanged.connect(self._estimate)
+        self.density.valueChanged.connect(self._estimate)
+
+    def _style(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: #202722;
-                color: #edf2eb;
-            }
-            QLabel {
-                color: #e7eee5;
-                font-size: 10pt;
-            }
-            QLabel#HeaderLabel {
-                color: #b7dca9;
-                font-size: 16pt;
-                font-weight: 700;
-                letter-spacing: 1px;
-            }
-            QLabel#SubtitleLabel {
-                color: #b5c1b4;
-                font-size: 9pt;
-                padding-bottom: 3px;
-            }
-            QLabel#StatusLabel {
-                color: #c7dfbd;
-                background-color: #29362d;
-                border: 1px solid #405443;
-                border-radius: 5px;
-                padding: 8px;
-            }
-            QLabel#FooterLabel {
-                color: #98a797;
-                font-size: 8pt;
-            }
-            QGroupBox {
-                color: #b7dca9;
-                font-size: 9pt;
-                font-weight: 700;
-                border: 1px solid #48584a;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding: 12px 10px 10px 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
+            QDialog, QWidget { background: #232a25; color: #ecf2e9; }
+            QLabel { color: #dbe8d6; font-size: 10pt; }
+            QLabel#Heading { color: #acd49c; font-weight: bold; font-size: 16pt; }
+            QLabel#Status { background: #314034; color: #d1ebc9;
+                            border: 1px solid #557159; border-radius: 5px;
+                            padding: 9px; }
+            QLabel#Note { color: #a8b8a7; font-size: 8pt; }
+            QGroupBox { border: 1px solid #536957; border-radius: 6px;
+                        margin-top: 12px; padding: 9px 8px 8px 8px;
+                        font-weight: bold; color: #bfe3b2; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px;
+                               padding: 0px 5px; }
             QComboBox, QSpinBox, QDoubleSpinBox {
-                color: #edf2eb;
-                background-color: #303b33;
-                border: 1px solid #566657;
-                border-radius: 4px;
-                padding: 5px 7px;
-                min-height: 22px;
-            }
-            QComboBox QAbstractItemView {
-                color: #edf2eb;
-                background-color: #303b33;
-                selection-background-color: #597b59;
-            }
-            QCheckBox {
-                color: #dce6d9;
-                spacing: 6px;
-            }
-            QCheckBox::indicator {
-                width: 15px;
-                height: 15px;
-            }
-            QPushButton {
-                color: #edf2eb;
-                background-color: #3b4b3e;
-                border: 1px solid #5b735d;
-                border-radius: 5px;
-                padding: 8px 10px;
-                min-height: 22px;
-            }
-            QPushButton:hover {
-                background-color: #4b614e;
-            }
-            QPushButton#PrimaryButton {
-                color: #172019;
-                background-color: #a7ce98;
-                border: 1px solid #b9dfaa;
-                font-weight: 700;
-            }
-            QPushButton#PrimaryButton:hover {
-                background-color: #bce0ad;
-            }
-            QPushButton#SecondaryButton {
-                background-color: #34443a;
-            }
-            QPushButton#ClearButton {
-                color: #d8c7c2;
-                background-color: #443b38;
-                border: 1px solid #65504a;
-            }
-            QPushButton#ClearButton:hover {
-                background-color: #594942;
-            }
+                background: #354238; color: #f3f5f1; border: 1px solid #5f7864;
+                border-radius: 4px; padding: 4px; min-height: 22px; }
+            QComboBox QAbstractItemView { background: #354238;
+                    color: white; selection-background-color: #58765a; }
+            QPushButton { background: #435847; color: white;
+                border: 1px solid #64846b; border-radius: 5px;
+                padding: 8px; min-height: 22px; }
+            QPushButton:hover { background: #56755b; }
+            QPushButton#Generate { background: #add49e; color: #192419;
+                font-weight: bold; }
+            QPushButton#Generate:hover { background: #bde9ad; }
+            QPushButton#Clear { background: #54433d; color: #e9d1c9; }
+            QScrollArea { border: none; }
         """)
 
-    def _read_settings(self):
+    def _count_changed(self, count):
+        self.generate_button.setText("Generate tree" if count == 1 else
+                                     "Generate grove ({0} trees)".format(count))
+        self.spacing.setEnabled(count > 1)
+        self._estimate()
+
+    def _estimate(self, *unused):
+        # Each branch creates two children per level; at terminal tips,
+        # 'density' clumps are made. Estimate is a UI performance hint.
+        levels = self.levels.value()
+        primary = self.branches.value()
+        branches = primary * (2 ** levels - 1)
+        leaves = primary * (2 ** (levels - 1)) * self.density.value()
+        self.estimate.setText("Approx. {0} branches and {1} foliage clumps per tree. "
+                              "Higher values take longer.".format(branches, leaves))
+
+    def _settings(self):
         return {
-            "height": self.height_spin.value(),
-            "canopy_width": self.width_spin.value(),
-            "branch_count": self.branches_spin.value(),
-            "branch_levels": self.levels_spin.value(),
-            "foliage_density": self.density_spin.value(),
-            "style": self.style_combo.currentText(),
-            "season": self.season_combo.currentText(),
-            "seed": self.seed_spin.value(),
-            "tree_count": self.count_spin.value(),
-            "spacing": self.spacing_spin.value(),
-            "create_base": self.base_checkbox.isChecked(),
+            "height": self.height.value(),
+            "canopy_width": self.width.value(),
+            "branch_count": self.branches.value(),
+            "branch_levels": self.levels.value(),
+            "foliage_density": self.density.value(),
+            "style": str(self.tree_style.currentText()),
+            "season": str(self.season.currentText()),
+            "seed": self.seed.value(),
+            "tree_count": self.number.value(),
+            "spacing": self.spacing.value(),
+            "create_base": self.ground.isChecked(),
         }
 
-    def _on_tree_count_changed(self, count):
-        if count == 1:
-            self.generate_button.setText("Generate Tree")
-        else:
-            self.generate_button.setText("Generate Grove ({0} trees)".format(count))
+    def _randomize(self):
+        self.seed.setValue(random.randint(0, 999999))
+        self.status.setText("New seed chosen; press Generate for a new shape.")
 
-    def _on_randomize(self):
-        self.seed_spin.setValue(random.randint(1, 999999))
-        self.status_label.setText("New seed selected. Generate to create a different variation.")
-
-    def _on_generate(self):
-        settings = self._read_settings()
-        old_group = self._last_generated_group
-        keep_previous = self.keep_checkbox.isChecked()
-
+    def _generate(self):
+        values = self._settings()
         self.generate_button.setEnabled(False)
-        self.status_label.setText("Generating geometry... please wait.")
+        self.status.setText("Generating geometry in Maya...")
         QtWidgets.QApplication.processEvents()
-
+        chunk_open = False
         try:
-            cmds.undoInfo(openChunk=True, chunkName="ARRAS Procedural Tree Generator")
-            if old_group and not keep_previous and cmds.objExists(old_group):
-                cmds.delete(old_group)
-
-            output_group = generate_asset(settings)
-            self._last_generated_group = output_group
-            cmds.select(output_group, replace=True)
-
-            if settings["tree_count"] == 1:
-                description = "1 {0} tree".format(settings["style"])
-            else:
-                description = "{0} {1} trees".format(settings["tree_count"], settings["style"])
-            self.status_label.setText(
-                "Created {0} ({1} palette, seed {2}).".format(
-                    description,
-                    settings["season"],
-                    settings["seed"],
-                )
-            )
-        except Exception as generation_error:
-            self.status_label.setText("Generation failed: {0}".format(generation_error))
+            cmds.undoInfo(openChunk=True, chunkName="ARRAS P01 Generate Tree")
+            chunk_open = True
+            new_root = generate_asset(values)
+            # Only replace the old output AFTER the new generation succeeds.
+            if not self.keep.isChecked() and self.last_output and \
+                    cmds.objExists(self.last_output):
+                cmds.delete(self.last_output)
+            self.last_output = new_root
+            cmds.select(new_root, replace=True)
+            amount = values["tree_count"]
+            self.status.setText("Created {0} {1} tree{2} using {3} colors "
+                                "(seed {4}).".format(
+                                    amount, values["style"],
+                                    "" if amount == 1 else "s",
+                                    values["season"], values["seed"]))
+        except Exception as exc:
+            self.status.setText("Generation failed: {0}".format(exc))
             cmds.warning(traceback.format_exc())
         finally:
-            try:
-                cmds.undoInfo(closeChunk=True)
-            except Exception:
-                pass
+            if chunk_open:
+                try:
+                    cmds.undoInfo(closeChunk=True)
+                except Exception as close_error:
+                    cmds.warning("ARRAS P01: Could not close undo chunk: {0}".format(
+                        close_error))
             self.generate_button.setEnabled(True)
 
-    def _on_clear(self):
-        if self._last_generated_group and cmds.objExists(self._last_generated_group):
-            cmds.delete(self._last_generated_group)
-            self.status_label.setText("Removed the last generated tree or grove.")
-            self._last_generated_group = None
+    def _clear(self):
+        if self.last_output and cmds.objExists(self.last_output):
+            cmds.delete(self.last_output)
+            self.status.setText("Deleted the most recent generated result.")
+            self.last_output = None
         else:
-            self.status_label.setText("There is no generated output from this window to clear.")
+            self.status.setText("There is no result from this window to delete.")
 
 
-# ---------------------------------------------------------------------------
-# Public launch function
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Public entry point
+# --------------------------------------------------------------------------
 
-_PROCEDURAL_TREE_WINDOW = None
+_WINDOW = None
 
 
 def show_ui(install_shelf=True):
-    """Open the generator. The first launch also installs the custom shelf icon."""
-    global _PROCEDURAL_TREE_WINDOW
+    """Display GUI. Optionally add custom shelf button on initial launch."""
+    global _WINDOW
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        raise RuntimeError("Run this tool in Maya's graphical interface, not mayapy.")
 
-    # Search by object name as well as using the module reference. This also
-    # closes an older window when the shelf button reloads this file via runpy.
+    # Rerunning with runpy creates a fresh module globals dictionary, so find
+    # prior windows by Qt object name rather than relying on one global alone.
     for widget in QtWidgets.QApplication.allWidgets():
         try:
-            if widget.objectName() == WINDOW_OBJECT_NAME:
+            if widget.objectName() == WINDOW_NAME:
                 widget.close()
                 widget.deleteLater()
-        except Exception:
+        except RuntimeError:
             pass
 
-    _PROCEDURAL_TREE_WINDOW = ProceduralTreeGeneratorUI(parent=_maya_main_window())
-    _PROCEDURAL_TREE_WINDOW.show()
-    _PROCEDURAL_TREE_WINDOW.raise_()
-    _PROCEDURAL_TREE_WINDOW.activateWindow()
-
+    _WINDOW = TreeGeneratorWindow(parent=_maya_window())
+    _WINDOW.show()
+    _WINDOW.raise_()
+    _WINDOW.activateWindow()
     if install_shelf:
-        installed = install_shelf_button()
-        if installed:
-            _PROCEDURAL_TREE_WINDOW.status_label.setText(
-                "Ready. Custom Tree Gen shelf button installed on the selected shelf."
+        if install_shelf_button():
+            _WINDOW.status.setText(
+                "Ready. Custom Tree Gen button installed on the selected Maya shelf."
             )
-    return _PROCEDURAL_TREE_WINDOW
+        else:
+            _WINDOW.status.setText(
+                "Ready to generate. Shelf setup failed; see Maya's Script Editor "
+                "for the warning, then rerun install_shelf_button()."
+            )
+    return _WINDOW
 
 
-# Running this file directly from Maya's Script Editor will open the UI.
-# The shelf button itself calls show_ui(install_shelf=False) to avoid replacing
-# the button while it is being clicked.
 if __name__ == "__main__":
-    show_ui(install_shelf=True)
+    show_ui()
