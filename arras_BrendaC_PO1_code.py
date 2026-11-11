@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 # P01 - Procedural Tree Generator
 # I made this to build different tree shapes in Maya without modeling each one.
@@ -132,18 +133,32 @@ def _assign(mesh, shading_group):
 
 
 def _merge(meshes, name):
-    """Join the separate pieces into one mesh."""
+    """Combine multiple meshes into one object."""
+
+    # Find the meshes that currently exist
     existing = [m for m in meshes if cmds.objExists(m)]
+
     if not existing:
         return None
+
     if len(existing) == 1:
         return cmds.rename(existing[0], name)
 
+    # Combine the meshes
     result = cmds.polyUnite(*existing, mergeUVSets=1)[0]
+
+    # Rename the combined mesh
     result = cmds.rename(result, name)
+
+    # Remove construction history
     cmds.delete(result, constructionHistory=True)
-    # Clear the original pieces after the combined mesh is finished.
-    cmds.delete(existing)
+
+    # Only delete original meshes that still exist
+    remaining = [m for m in existing if cmds.objExists(m)]
+
+    if remaining:
+        cmds.delete(*remaining)
+
     return result
 
 
@@ -410,7 +425,7 @@ def _icon_path():
 def install_shelf_button():
     """Add a button to the current Maya shelf."""
     try:
-        shelf_top = mel.eval('global string $gShelfTopLevel; $gShelfTopLevel;')
+        shelf_top = mel.eval('global string $gShelfTopLevel; $temp = $gShelfTopLevel;')
         if not shelf_top or not cmds.tabLayout(shelf_top, exists=True):
             raise RuntimeError("Maya's shelf UI is not available yet.")
         selected = cmds.tabLayout(shelf_top, query=True, selectTab=True)
@@ -740,4 +755,3 @@ def show_ui(install_shelf=True):
 
 if __name__ == "__main__":
     show_ui()
-
