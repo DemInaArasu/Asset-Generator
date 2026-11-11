@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
 # P01 - Procedural Tree Generator
 # I made this to build different tree shapes in Maya without modeling each one.
 # Run this in Maya's Python Script Editor, not regular Python.
 # Example (change the path to wherever the file is saved):
 # import runpy
-# tree_tool = runpy.run_path(r"C:/YOUR_FOLDER/ArrasBrenda_P01_with_notes.py")
+# tree_tool = runpy.run_path(r"C:\Users\bca240000\Documents\Programming_Project_01\Asset-Generator")
 # tree_tool["show_ui"]()
 
 import math
