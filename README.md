@@ -2,8 +2,7 @@ ARRAS - PROCEDURAL TREE GENERATOR
 P01: Procedural Asset Generator
 
 GitHub URL:
-<ADD YOUR GITHUB REPOSITORY URL HERE>
-
+https://github.com/DemInaArasu/Asset-Generator
 Challenge Feature(s):
 - Recursive branch generation: branches split into smaller branches across multiple user-selected levels to create different tree structures.
 - Procedural foliage: low-poly leaf clusters receive randomized size, rotation, and placement while remaining repeatable with the selected random seed.
@@ -19,7 +18,7 @@ INSTALLATION / LAUNCH:
 3. Run the following code, replacing the path with the location of this file:
 
    import runpy
-   _tool = runpy.run_path(r"C:\path\to\ArrasBrenda_P01_code.py")
+   _tool = runpy.run_path(r"C:\Users\bca240000\Documents\Programming_Project_01\Asset-Generator")
    _tool["show_ui"]()
 
 4. The UI opens and a custom Tree Gen button is added to the currently selected Maya shelf.
